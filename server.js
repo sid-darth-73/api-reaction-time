@@ -1,12 +1,13 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import pkg from 'pg';
-
+import cors from 'cors';
 dotenv.config();
 
 const { Pool } = pkg;
 const app = express();
 app.use(express.json());
+app.use(cors());
 
 
 
@@ -35,7 +36,7 @@ app.post('/login', async (req, res) => {
   }
 
   const timeRecorded = await pool.query("SELECT time FROM times WHERE username = $1", [username]);
-  const reactionTime = timeRecorded.rows[0]?.time ?? 0;
+  const reactionTime = timeRecorded.rows[0]?.time ?? 1000;
 
   res.status(200).json({ reactionTime });
 });
@@ -62,25 +63,34 @@ app.post('/register', async (req, res) => {
 
 // Update
 app.post('/update', async (req, res) => {
+
   const { reactionTime, username } = req.body;
-  if(!username || reactionTime == null) {
-    return res.status(400).json({ message: "Missing data" });
+
+  const updateResult = await pool.query(
+    `UPDATE times SET time = $1 WHERE username = $2 AND time > $1`,
+    [reactionTime, username]
+  );
+
+  // if no rows were updated, it means either the user has no time
+  // or their time wasn't better. We need to check if they have a record.
+  if(updateResult.rowCount === 0) {
+    const existingTime = await pool.query("SELECT id FROM times WHERE username = $1", [username]);
+
+    // if they have no record at all, insert one.
+    if(existingTime.rowCount === 0) {
+      await pool.query(
+        "INSERT INTO times (username, time) VALUES ($1, $2)",
+        [username, reactionTime]
+      );
+      return res.status(201).json({ message: "Time recorded" });
+    }
+
+    // if they have a record but it wasn't updated, the time was not an improvement.
+    return res.status(200).json({ message: "Time not improved" });
   }
 
-  const storedTime = await pool.query("SELECT time FROM times WHERE username = $1", [username]);
-  const existingTime = storedTime.rows[0]?.time;
-
-  if(!existingTime) {
-    await pool.query("INSERT INTO times (username, time) VALUES ($1, $2)", [username, reactionTime]);
-    return res.status(201).json({ message: "Time recorded" });
-  }
-
-  if(reactionTime < existingTime) {
-    await pool.query("UPDATE times SET time = $1 WHERE username = $2", [reactionTime, username]);
-    return res.status(200).json({ message: "Time updated" });
-  }
-
-  res.status(200).json({ message: "Time not improved" });
+  // if the update was successful
+  return res.status(200).json({ message: "Time updated" });
 });
 
 
